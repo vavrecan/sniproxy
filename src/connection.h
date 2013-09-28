@@ -32,6 +32,7 @@
 #include "listener.h"
 #include "buffer.h"
 
+
 struct Connection {
     enum State {
         NEW,            /* Before successful accept */
@@ -56,6 +57,8 @@ struct Connection {
     size_t hostname_len;
     struct ResolvQuery *query_handle;
     ev_tstamp established_timestamp;
+
+    TAILQ_HEAD(ConnectionEventHead, ConnectionEvent) events;
 
     TAILQ_ENTRY(Connection) entries;
 };
