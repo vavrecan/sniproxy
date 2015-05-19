@@ -217,13 +217,11 @@ connection_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             close(w->fd);
             free_connection(loop, connection);
             return;
-            revents = 0; /* Clear revents so we don't try to send */
         } else if (bytes_received == 0) { /* peer closed socket */
             ev_io_stop(loop, &connection->watcher);
             close(w->fd);
             free_connection(loop, connection);
             return;
-            revents = 0;
         }
     }
 
