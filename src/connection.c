@@ -245,6 +245,13 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
                 printf("auth received data %d\n", proxy_input_buffer->buffer[1]);
                 con->proxy_state = CONNECT;
             }
+            else if (con->proxy_state == CONNECT_SEND) {
+                printf("connect received data %d\n", proxy_input_buffer->buffer[0]);
+                printf("connect received data %d\n", proxy_input_buffer->buffer[1]);
+                printf("connect received data %d\n", proxy_input_buffer->buffer[2]);
+                printf("connect received data %d\n", proxy_input_buffer->buffer[3]);
+                con->state = CONNECTED;
+            }
             else {
                 assert(bytes_received > 0);
             }
@@ -259,8 +266,7 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             ptr[0] = 0x02; ptr++;   // user pass auth
             proxy_output_buffer->len = 4;
         }
-
-        if (con->proxy_state == AUTH) {
+        else if (con->proxy_state == AUTH) {
             // username password auth
             char *ptr = proxy_output_buffer->buffer;
             ptr[0] = 0x01; ptr++; // version number must be 1
@@ -270,12 +276,20 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             strncpy(ptr, "xxxxxxxxx", 9); ptr += 9; // password
             proxy_output_buffer->len = 2+1+5+9;
         }
-
-        if (con->proxy_state == CONNECT) {
+        else if (con->proxy_state == CONNECT) {
             // send connect command
             char *ptr = proxy_output_buffer->buffer;
-            ptr[0] = 0x01; ptr++;
-            proxy_output_buffer->len = 1;
+            ptr[0] = 0x05; ptr++;   // socks protocol version 5
+            ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
+            ptr[0] = 0x00; ptr++;   // reserved
+            ptr[0] = 0x03; ptr++;   //  Domain name
+            ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
+            strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
+            int dest_port = 80;
+            ptr[0] = (dest_port >> 8); ptr++; // 2 bytes port number yeeeeaaah
+            ptr[0] = (dest_port & 0xFF); ptr++;
+
+            proxy_output_buffer->len = 7+con->hostname_len;
         }
 
         if (revents & EV_WRITE && buffer_len(proxy_output_buffer)) {
@@ -303,7 +317,8 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
         free_buffer(proxy_input_buffer);
         free_buffer(proxy_output_buffer);
     }
-    else {
+
+    if (con->state != PROXY_HANDSHAKE) {
         /* Receive first in case the socket was closed */
         if (revents & EV_READ && buffer_room(input_buffer)) {
             ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
