@@ -57,17 +57,23 @@ struct Connection {
     size_t hostname_len;
     struct ResolvQuery *query_handle;
     ev_tstamp established_timestamp;
-    const char *proxy;
 
-    enum ProxyState {
-        GREETINGS,
-        GREETINGS_SEND,
-        AUTH,
-        AUTH_SEND,
-        CONNECT,
-        CONNECT_SEND,
-        DONE
-    } proxy_state;
+    struct {
+        int enabled;
+        struct Buffer *input_buffer;
+        struct Buffer *output_buffer;
+        enum ProxyState {
+            GREETINGS,
+            GREETINGS_SEND,
+            AUTH,
+            AUTH_SEND,
+            CONNECT,
+            CONNECT_SEND,
+            DONE
+        } state;
+        char *username;
+        char *password;
+    } proxy;
 
     TAILQ_ENTRY(Connection) entries;
 };
