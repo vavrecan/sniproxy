@@ -207,6 +207,144 @@ server_socket_open(const struct Connection *con) {
         con->state == CLIENT_CLOSED;
 }
 
+static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents) {
+    struct Connection *con = (struct Connection *)w->data;
+    int is_client = &con->client.watcher == w;
+    void (*close_socket)(struct Connection *, struct ev_loop *) =
+            is_client ? close_client_socket : close_server_socket;
+
+    // TODO initialize this buffer with Connection
+    struct Buffer *proxy_input_buffer = new_buffer(256, loop);
+    struct Buffer *proxy_output_buffer = new_buffer(256, loop);
+    proxy_input_buffer->len = 0;
+
+    if (*revents & EV_READ && buffer_room(proxy_input_buffer)) {
+        ssize_t bytes_received = buffer_recv(proxy_input_buffer, w->fd, 0, loop);
+        if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+            warn("recv(): %s, closing connection", strerror(errno));
+            close_socket(con, loop);
+            *revents = 0; /* Clear *revents so we don't try to send */
+        } else if (bytes_received == 0) { /* peer closed socket */
+            close_socket(con, loop);
+            *revents = 0;
+        }
+
+        if (con->proxy_state == GREETINGS_SEND) {
+            // check response, 0x02 require auth and 0x00 process without auth
+            if (proxy_input_buffer->buffer[0] == 0x05 &&
+                bytes_received > 1 && proxy_input_buffer->buffer[1] == 0x02) {
+                con->proxy_state = AUTH;
+            }
+            else if (proxy_input_buffer->buffer[0] == 0x05 &&
+                     bytes_received > 1 && proxy_input_buffer->buffer[1] == 0x00) {
+                con->proxy_state = CONNECT;
+            }
+            else {
+                warn("recv(): proxy handshake failed %d", proxy_input_buffer->buffer[1]);
+                close_socket(con, loop);
+                *revents = 0;
+            }
+        }
+        else if (con->proxy_state == AUTH_SEND) {
+            // check authorization
+            if (bytes_received > 1 && proxy_input_buffer->buffer[1] == 0x00) {
+                con->proxy_state = CONNECT;
+            }
+            else {
+                warn("recv(): proxy auth failed (%d %d)",
+                     proxy_input_buffer->buffer[0], proxy_input_buffer->buffer[1]);
+                close_socket(con, loop);
+                *revents = 0;
+            }
+        }
+        else if (con->proxy_state == CONNECT_SEND) {
+            // we always received more than 7 bytes (protocol,
+            if (bytes_received > 7 && proxy_input_buffer->buffer[0] == 0x05 &&
+                proxy_input_buffer->buffer[1] == 0x00) {
+                // we are done and we can process on with normal connection
+                con->state = CONNECTED;
+            }
+            else {
+                warn("recv(): proxy connection failed (%d %d %d %d)",
+                     proxy_input_buffer->buffer[0], proxy_input_buffer->buffer[1],
+                     proxy_input_buffer->buffer[2], proxy_input_buffer->buffer[3]);
+                close_socket(con, loop);
+                *revents = 0;
+            }
+        }
+        else {
+            warn("recv(): got unknown proxy state when reading");
+
+            close_socket(con, loop);
+            *revents = 0;
+        }
+    }
+
+    if (con->proxy_state == GREETINGS) {
+        // send connect
+        char *ptr = proxy_output_buffer->buffer;
+        ptr[0] = 0x05; ptr++;   //socks protocol version 5
+        ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
+        ptr[0] = 0x00; ptr++;   // no auth
+        ptr[0] = 0x02; ptr++;   // user pass auth
+        proxy_output_buffer->len = 4;
+    }
+    else if (con->proxy_state == AUTH) {
+        // username password auth
+        char *ptr = proxy_output_buffer->buffer;
+        ptr[0] = 0x01; ptr++; // version number must be 1
+        ptr[0] = 0x05; ptr++; // send the length of username
+        strncpy(ptr, "marek", 6); ptr += 5; // username
+        ptr[0] = 0x09; ptr++; // send the length of password
+        strncpy(ptr, "x", 9); ptr += 9; // password
+        proxy_output_buffer->len = 2+1+5+9;
+    }
+    else if (con->proxy_state == CONNECT) {
+        // send connect command
+        char *ptr = proxy_output_buffer->buffer;
+        ptr[0] = 0x05; ptr++;   // socks protocol version 5
+        ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
+        ptr[0] = 0x00; ptr++;   // reserved
+        ptr[0] = 0x03; ptr++;   // domain name
+        ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
+        strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
+
+        int dest_port = address_port(con->listener->address);
+        ptr[0] = (dest_port >> 8); ptr++;   // 2 bytes port number
+        ptr[0] = (dest_port & 0xFF); ptr++;
+
+        proxy_output_buffer->len = 7+con->hostname_len;
+    }
+
+    if (*revents & EV_WRITE && buffer_len(proxy_output_buffer)) {
+        ssize_t bytes_transmitted = buffer_send(proxy_output_buffer, w->fd, 0, loop);
+        if (bytes_transmitted < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+            warn("send(): %s, closing connection", strerror(errno));
+            close_socket(con, loop);
+        }
+
+        // TODO check if everything was written
+        if (con->proxy_state == GREETINGS) {
+            con->proxy_state = GREETINGS_SEND;
+        }
+        else if (con->proxy_state == AUTH) {
+            con->proxy_state = AUTH_SEND;
+        }
+        else if (con->proxy_state == CONNECT) {
+            con->proxy_state = CONNECT_SEND;
+        }
+        else {
+            warn("send(): got unknown proxy state when writting");
+
+            close_socket(con, loop);
+            *revents = 0;
+        }
+    }
+
+    free_buffer(proxy_input_buffer);
+    free_buffer(proxy_output_buffer);
+}
+
 static void
 connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     struct Connection *con = (struct Connection *)w->data;
@@ -219,117 +357,13 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             is_client ? close_client_socket : close_server_socket;
 
     if (con->state == PROXY_HANDSHAKE) {
-        // TODO initialize this buffer with Connection
-        struct Buffer *proxy_input_buffer = new_buffer(256, loop);
-        struct Buffer *proxy_output_buffer = new_buffer(256, loop);
-        proxy_input_buffer->len = 0;
-
-        if (revents & EV_READ && buffer_room(proxy_input_buffer)) {
-            ssize_t bytes_received = buffer_recv(proxy_input_buffer, w->fd, 0, loop);
-            printf("-- read: %d\n",bytes_received);
-            if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
-                warn("recv(): %s, closing connection", strerror(errno));
-                close_socket(con, loop);
-                revents = 0; /* Clear revents so we don't try to send */
-            } else if (bytes_received == 0) { /* peer closed socket */
-                close_socket(con, loop);
-                revents = 0;
-            }
-
-            if (con->proxy_state == GREETINGS_SEND) {
-                // TODO handle errors
-                printf("received data %d\n", proxy_input_buffer->buffer[0]);
-                printf("received data %d\n", proxy_input_buffer->buffer[1]);
-                con->proxy_state = AUTH;
-            }
-            else if (con->proxy_state == AUTH_SEND) {
-                // TODO handle errors
-                printf("auth received data %d\n", proxy_input_buffer->buffer[0]);
-                printf("auth received data %d\n", proxy_input_buffer->buffer[1]);
-                con->proxy_state = CONNECT;
-            }
-            else if (con->proxy_state == CONNECT_SEND) {
-                // TODO handle errors
-                printf("connect received data %d\n", proxy_input_buffer->buffer[0]);
-                printf("connect received data %d\n", proxy_input_buffer->buffer[1]);
-                printf("connect received data %d\n", proxy_input_buffer->buffer[2]);
-                printf("connect received data %d\n", proxy_input_buffer->buffer[3]);
-                con->state = CONNECTED;
-            }
-            else {
-                assert(bytes_received > 0);
-            }
-        }
-
-        if (con->proxy_state == NEW) {
-            // send connect
-            char *ptr = proxy_output_buffer->buffer;
-            ptr[0] = 0x05; ptr++;   //socks protocol version 5
-            ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
-            ptr[0] = 0x00; ptr++;   // no auth
-            ptr[0] = 0x02; ptr++;   // user pass auth
-            proxy_output_buffer->len = 4;
-        }
-        else if (con->proxy_state == AUTH) {
-            // username password auth
-            char *ptr = proxy_output_buffer->buffer;
-            ptr[0] = 0x01; ptr++; // version number must be 1
-            ptr[0] = 0x05; ptr++; // send the length of username
-            strncpy(ptr, "marek", 6); ptr += 5; // username
-            ptr[0] = 0x09; ptr++; // send the length of password
-            strncpy(ptr, "SocCK2322", 9); ptr += 9; // password
-            proxy_output_buffer->len = 2+1+5+9;
-        }
-        else if (con->proxy_state == CONNECT) {
-            // send connect command
-            char *ptr = proxy_output_buffer->buffer;
-            ptr[0] = 0x05; ptr++;   // socks protocol version 5
-            ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
-            ptr[0] = 0x00; ptr++;   // reserved
-            ptr[0] = 0x03; ptr++;   //  Domain name
-            ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
-            strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
-
-            int dest_port = address_port(con->listener->address);
-            printf("port is %d\n", dest_port);
-
-            ptr[0] = (dest_port >> 8); ptr++;   // 2 bytes port number
-            ptr[0] = (dest_port & 0xFF); ptr++;
-
-            proxy_output_buffer->len = 7+con->hostname_len;
-        }
-
-        if (revents & EV_WRITE && buffer_len(proxy_output_buffer)) {
-            ssize_t bytes_transmitted = buffer_send(proxy_output_buffer, w->fd, 0, loop);
-            printf("-- written: %d\n", bytes_transmitted);
-            if (bytes_transmitted < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
-                printf("send(): %s, closing connection", strerror(errno));
-                close_socket(con, loop);
-            }
-
-            if (con->proxy_state == GREETINGS) {
-                con->proxy_state = GREETINGS_SEND;
-            }
-            else if (con->proxy_state == AUTH) {
-                con->proxy_state = AUTH_SEND;
-            }
-            else if (con->proxy_state == CONNECT) {
-                con->proxy_state = CONNECT_SEND;
-            }
-            else {
-                assert(0);
-            }
-        }
-
-        free_buffer(proxy_input_buffer);
-        free_buffer(proxy_output_buffer);
+        proxy_handshake(loop, w, &revents);
     }
 
     if (con->state != PROXY_HANDSHAKE) {
         /* Receive first in case the socket was closed */
         if (revents & EV_READ && buffer_room(input_buffer)) {
             ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
-            printf("Received: %d\n",bytes_received);
             if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
                 warn("recv(): %s, closing connection",
                      strerror(errno));
@@ -345,7 +379,6 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
         /* Transmit */
         if (revents & EV_WRITE && buffer_len(output_buffer)) {
             ssize_t bytes_transmitted = buffer_send(output_buffer, w->fd, 0, loop);
-            printf("Transmitted: %d\n",bytes_transmitted);
             if (bytes_transmitted < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
                 warn("send(): %s, closing connection",
                      strerror(errno));
@@ -909,52 +942,52 @@ print_connection(FILE *file, const struct Connection *con) {
 
     switch (con->state) {
         case NEW:
-            fprintf(file, "NEW           -\t-\n");
+            fprintf(file, "NEW            -\t-\n");
             break;
         case ACCEPTED:
-            fprintf(file, "ACCEPTED      %s %zu/%zu\t-\n",
+            fprintf(file, "ACCEPTED       %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case PARSED:
-            fprintf(file, "PARSED        %s %zu/%zu\t-\n",
+            fprintf(file, "PARSED          %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case RESOLVING:
-            fprintf(file, "RESOLVING      %s %zu/%zu\t-\n",
+            fprintf(file, "RESOLVING       %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case RESOLVED:
-            fprintf(file, "RESOLVED      %s %zu/%zu\t-\n",
+            fprintf(file, "RESOLVED        %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case CONNECTED:
-            fprintf(file, "CONNECTED     %s %zu/%zu\t%s %zu/%zu\n",
+            fprintf(file, "CONNECTED       %s %zu/%zu\t%s %zu/%zu\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size,
                     display_sockaddr(&con->server.addr, server, sizeof(server)),
                     con->server.buffer->len, con->server.buffer->size);
             break;
         case SERVER_CLOSED:
-            fprintf(file, "SERVER_CLOSED %s %zu/%zu\t-\n",
+            fprintf(file, "SERVER_CLOSED   %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case PROXY_HANDSHAKE:
-            fprintf(file, "PROXY_HANDSHAKE%s %zu/%zu\t-\n",
+            fprintf(file, "PROXY_HANDSHAKE %s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
         case CLIENT_CLOSED:
-            fprintf(file, "CLIENT_CLOSED -\t%s %zu/%zu\n",
+            fprintf(file, "CLIENT_CLOSED   -\t%s %zu/%zu\n",
                     display_sockaddr(&con->server.addr, server, sizeof(server)),
                     con->server.buffer->len, con->server.buffer->size);
             break;
         case CLOSED:
-            fprintf(file, "CLOSED        -\t-\n");
+            fprintf(file, "CLOSED          -\t-\n");
             break;
     }
 }

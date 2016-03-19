@@ -181,7 +181,6 @@ new_address(const char *hostname_or_ip) {
     memset(&sa, 0, sizeof(sa));
     if (strncmp("socks5://", hostname_or_ip, 9) == 0) {
         len = strlen(hostname_or_ip);
-        printf("Parsing proxy from configuration: %s\n", hostname_or_ip);
         struct Address *addr = malloc(
                 offsetof(struct Address, data) + len + 1);
         if (addr != NULL) {
