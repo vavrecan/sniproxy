@@ -219,6 +219,7 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             is_client ? close_client_socket : close_server_socket;
 
     if (con->state == PROXY_HANDSHAKE) {
+        // TODO initialize this buffer with Connection
         struct Buffer *proxy_input_buffer = new_buffer(256, loop);
         struct Buffer *proxy_output_buffer = new_buffer(256, loop);
         proxy_input_buffer->len = 0;
@@ -236,16 +237,19 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             }
 
             if (con->proxy_state == GREETINGS_SEND) {
+                // TODO handle errors
                 printf("received data %d\n", proxy_input_buffer->buffer[0]);
                 printf("received data %d\n", proxy_input_buffer->buffer[1]);
                 con->proxy_state = AUTH;
             }
             else if (con->proxy_state == AUTH_SEND) {
+                // TODO handle errors
                 printf("auth received data %d\n", proxy_input_buffer->buffer[0]);
                 printf("auth received data %d\n", proxy_input_buffer->buffer[1]);
                 con->proxy_state = CONNECT;
             }
             else if (con->proxy_state == CONNECT_SEND) {
+                // TODO handle errors
                 printf("connect received data %d\n", proxy_input_buffer->buffer[0]);
                 printf("connect received data %d\n", proxy_input_buffer->buffer[1]);
                 printf("connect received data %d\n", proxy_input_buffer->buffer[2]);
@@ -289,7 +293,7 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             int dest_port = address_port(con->listener->address);
             printf("port is %d\n", dest_port);
 
-            ptr[0] = (dest_port >> 8); ptr++; // 2 bytes port number yeeeeaaah
+            ptr[0] = (dest_port >> 8); ptr++;   // 2 bytes port number
             ptr[0] = (dest_port & 0xFF); ptr++;
 
             proxy_output_buffer->len = 7+con->hostname_len;
@@ -561,9 +565,7 @@ static void
 resolve_server_address(struct Connection *con, struct ev_loop *loop) {
     /* TODO avoid extra malloc in listener_lookup_server_address() */
     struct Address *server_address =
-            listener_lookup_server_address(con->listener, con->hostname, con->hostname_len);
-
-    printf("Resolving address: %s\n", con->hostname);
+        listener_lookup_server_address(con->listener, con->hostname, con->hostname_len);
 
     if (server_address == NULL) {
         abort_connection(con);
@@ -659,12 +661,6 @@ free_resolv_cb_data(struct resolv_cb_data *cb_data) {
 
 static void
 initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
-    printf("Initializing connection to %s\n", con->hostname);
-
-    if (con->proxy != NULL) {
-        printf("Proxy: %s\n", con->proxy);
-    }
-
     int sockfd = socket(con->server.addr.ss_family, SOCK_STREAM, 0);
     if (sockfd < 0) {
         char client[INET6_ADDRSTRLEN + 8];
@@ -699,11 +695,6 @@ initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
             return;
         }
     }
-
-    // DEBUG
-    struct sockaddr_in *sin = (struct sockaddr_in *)&con->server.addr;
-    unsigned char *ip = (unsigned char *)&sin->sin_addr.s_addr;
-    printf("%d %d %d %d\n", ip[0], ip[1], ip[2], ip[3]);
 
     int result = connect(sockfd,
             (struct sockaddr *)&con->server.addr,
