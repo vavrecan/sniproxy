@@ -351,7 +351,7 @@ address_port(const struct Address *addr) {
         case WILDCARD:
             return addr->port;
         case PROXY:
-            return 0;
+            return addr->port;
         default:
             /* invalid Address type */
             assert(0);

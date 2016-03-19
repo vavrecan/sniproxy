@@ -273,7 +273,7 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             ptr[0] = 0x05; ptr++; // send the length of username
             strncpy(ptr, "marek", 6); ptr += 5; // username
             ptr[0] = 0x09; ptr++; // send the length of password
-            strncpy(ptr, "xxxxxxxxx", 9); ptr += 9; // password
+            strncpy(ptr, "SocCK2322", 9); ptr += 9; // password
             proxy_output_buffer->len = 2+1+5+9;
         }
         else if (con->proxy_state == CONNECT) {
@@ -285,7 +285,10 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             ptr[0] = 0x03; ptr++;   //  Domain name
             ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
             strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
-            int dest_port = 80;
+
+            int dest_port = address_port(con->listener->address);
+            printf("port is %d\n", dest_port);
+
             ptr[0] = (dest_port >> 8); ptr++; // 2 bytes port number yeeeeaaah
             ptr[0] = (dest_port & 0xFF); ptr++;
 
