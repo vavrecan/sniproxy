@@ -40,6 +40,7 @@ struct Connection {
         RESOLVING,      /* DNS query in progress */
         RESOLVED,       /* Server socket address resolved */
         CONNECTED,      /* Connected to server */
+        PROXY_HANDSHAKE,/* Performing proxy handshake */
         SERVER_CLOSED,  /* Client closed socket */
         CLIENT_CLOSED,  /* Server closed socket */
         CLOSED          /* Both sockets closed */
@@ -56,6 +57,7 @@ struct Connection {
     size_t hostname_len;
     struct ResolvQuery *query_handle;
     ev_tstamp established_timestamp;
+    const char *proxy;
 
     TAILQ_ENTRY(Connection) entries;
 };

@@ -41,6 +41,7 @@ struct Address {
         HOSTNAME,
         SOCKADDR,
         WILDCARD,
+        PROXY
     } type;
 
     size_t len;     /* length of data */
@@ -176,6 +177,24 @@ new_address(const char *hostname_or_ip) {
         return addr;
     }
 
+    /* proxy server */
+    memset(&sa, 0, sizeof(sa));
+    if (strncmp("socks5://", hostname_or_ip, 9) == 0) {
+        len = strlen(hostname_or_ip);
+        printf("Parsing proxy from configuration: %s\n", hostname_or_ip);
+        struct Address *addr = malloc(
+                offsetof(struct Address, data) + len + 1);
+        if (addr != NULL) {
+            addr->type = PROXY;
+            addr->port = 0;
+            addr->len = len;
+            memcpy(addr->data, hostname_or_ip, len);
+            addr->data[addr->len] = '\0';
+        }
+
+        return addr;
+    }
+
     return NULL;
 }
 
@@ -215,6 +234,9 @@ address_len(const struct Address *addr) {
             return offsetof(struct Address, data) + addr->len;
         case WILDCARD:
             return sizeof(struct Address);
+        case PROXY:
+            /* include trailing null byte */
+            return offsetof(struct Address, data) + addr->len + 1;
         default:
             assert(0);
             return 0;
@@ -265,6 +287,11 @@ address_is_sockaddr(const struct Address *addr) {
 }
 
 int
+address_is_proxy(const struct Address *addr) {
+    return addr != NULL && addr->type == PROXY;
+}
+
+int
 address_is_wildcard(const struct Address *addr) {
     return addr != NULL && addr->type == WILDCARD;
 }
@@ -272,6 +299,14 @@ address_is_wildcard(const struct Address *addr) {
 const char *
 address_hostname(const struct Address *addr) {
     if (addr->type != HOSTNAME)
+        return NULL;
+
+    return addr->data;
+}
+
+const char *
+address_proxy(const struct Address *addr) {
+    if (addr->type != PROXY)
         return NULL;
 
     return addr->data;
@@ -315,6 +350,8 @@ address_port(const struct Address *addr) {
             }
         case WILDCARD:
             return addr->port;
+        case PROXY:
+            return 0;
         default:
             /* invalid Address type */
             assert(0);
@@ -352,6 +389,8 @@ address_set_port(struct Address *addr, int port) {
         case WILDCARD:
             addr->port = port;
             break;
+        case PROXY:
+            break;
         default:
             /* invalid Address type */
             assert(0);
@@ -381,6 +420,9 @@ display_address(const struct Address *addr, char *buffer, size_t buffer_len) {
                         addr->port);
             else
                 snprintf(buffer, buffer_len, "*");
+            return buffer;
+        case PROXY:
+            snprintf(buffer, buffer_len, "proxy:%s", addr->data);
             return buffer;
         default:
             assert(0);

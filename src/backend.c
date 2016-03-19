@@ -66,7 +66,7 @@ accept_backend_arg(struct Backend *backend, const char *arg) {
             return -1;
         }
 #ifndef HAVE_LIBUDNS
-        if (!address_is_sockaddr(backend->address)) {
+        if (!address_is_sockaddr(backend->address) && !address_is_proxy(backend->address)) {
             err("Only socket address backends are permitted when compiled without libudns");
             return -1;
         }

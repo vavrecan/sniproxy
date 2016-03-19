@@ -191,6 +191,7 @@ client_socket_open(const struct Connection *con) {
         con->state == RESOLVING ||
         con->state == RESOLVED ||
         con->state == CONNECTED ||
+        con->state == PROXY_HANDSHAKE ||
         con->state == SERVER_CLOSED;
 }
 
@@ -202,7 +203,96 @@ client_socket_open(const struct Connection *con) {
 static inline int
 server_socket_open(const struct Connection *con) {
     return con->state == CONNECTED ||
+        con->state == PROXY_HANDSHAKE ||
         con->state == CLIENT_CLOSED;
+}
+
+static void
+connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
+    struct Connection *con = (struct Connection *)w->data;
+    int is_client = &con->client.watcher == w;
+    struct Buffer *input_buffer =
+            is_client ? con->client.buffer : con->server.buffer;
+    struct Buffer *output_buffer =
+            is_client ? con->server.buffer : con->client.buffer;
+    void (*close_socket)(struct Connection *, struct ev_loop *) =
+            is_client ? close_client_socket : close_server_socket;
+
+    if (con->state == PROXY_HANDSHAKE) {
+        struct Buffer *input_buffer = new_buffer(256, loop);
+        struct Buffer *output_buffer = new_buffer(256, loop);
+
+        char *ptr = input_buffer->buffer;
+        ptr[0] = 0x05; ptr++;   //socks protocol version 5
+        ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
+        ptr[0] = 0x00; ptr++;   // no auth
+        ptr[0] = 0x02; ptr++;   // user pass auth
+        input_buffer->size = 4;
+        output_buffer->size = 2;
+
+        if (revents & EV_READ && buffer_room(input_buffer)) {
+            printf("-- readding\n");
+        }
+
+        if (revents & EV_WRITE && buffer_len(output_buffer)) {
+            printf("-- writting\n");
+        }
+    }
+    else {
+        /* Receive first in case the socket was closed */
+        if (revents & EV_READ && buffer_room(input_buffer)) {
+            ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
+            printf("Received: %d\n",bytes_received);
+            if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+                warn("recv(): %s, closing connection",
+                     strerror(errno));
+
+                close_socket(con, loop);
+                revents = 0; /* Clear revents so we don't try to send */
+            } else if (bytes_received == 0) { /* peer closed socket */
+                close_socket(con, loop);
+                revents = 0;
+            }
+        }
+
+        /* Transmit */
+        if (revents & EV_WRITE && buffer_len(output_buffer)) {
+            ssize_t bytes_transmitted = buffer_send(output_buffer, w->fd, 0, loop);
+            printf("Transmitted: %d\n",bytes_transmitted);
+            if (bytes_transmitted < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+                warn("send(): %s, closing connection",
+                     strerror(errno));
+
+                close_socket(con, loop);
+            }
+        }
+    }
+
+    /* Handle any state specific logic */
+    if (is_client && con->state == ACCEPTED)
+        parse_client_request(con);
+    if (is_client && con->state == PARSED)
+        resolve_server_address(con, loop);
+    if (is_client && con->state == RESOLVED)
+        initiate_server_connect(con, loop);
+
+    /* Close other socket if we have flushed corresponding buffer */
+    if (con->state == SERVER_CLOSED && buffer_len(con->server.buffer) == 0)
+        close_client_socket(con, loop);
+    if (con->state == CLIENT_CLOSED && buffer_len(con->client.buffer) == 0)
+        close_server_socket(con, loop);
+
+    if (con->state == CLOSED) {
+        TAILQ_REMOVE(&connections, con, entries);
+
+        if (con->listener->access_log)
+            log_connection(con);
+
+        free_connection(con);
+        return;
+    }
+
+    reactivate_watchers(con, loop);
 }
 
 /*
@@ -388,11 +478,23 @@ static void
 resolve_server_address(struct Connection *con, struct ev_loop *loop) {
     /* TODO avoid extra malloc in listener_lookup_server_address() */
     struct Address *server_address =
-        listener_lookup_server_address(con->listener, con->hostname, con->hostname_len);
+            listener_lookup_server_address(con->listener, con->hostname, con->hostname_len);
+
+    printf("Resolving address: %s\n", con->hostname);
 
     if (server_address == NULL) {
         abort_connection(con);
         return;
+    } else if (address_is_proxy(server_address)) {
+        con->state = RESOLVED;
+
+        // TODO PARSE PROXY HERE
+        const char * host = "192.243.111.140";
+        inet_pton(AF_INET, host, &((struct sockaddr_in *)&con->server.addr)->sin_addr);
+        ((struct sockaddr_in *)&con->server.addr)->sin_family = AF_INET;
+        (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(1090);
+
+        con->proxy = address_proxy(server_address);
     } else if (address_is_hostname(server_address)) {
 #ifndef HAVE_LIBUDNS
         warn("DNS lookups not supported unless sniproxy compiled with libudns");
@@ -473,6 +575,12 @@ free_resolv_cb_data(struct resolv_cb_data *cb_data) {
 
 static void
 initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
+    printf("Initializing connection to %s\n", con->hostname);
+
+    if (con->proxy != NULL) {
+        printf("Proxy: %s\n", con->proxy);
+    }
+
     int sockfd = socket(con->server.addr.ss_family, SOCK_STREAM, 0);
     if (sockfd < 0) {
         char client[INET6_ADDRSTRLEN + 8];
@@ -508,6 +616,11 @@ initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
         }
     }
 
+    // DEBUG
+    struct sockaddr_in *sin = (struct sockaddr_in *)&con->server.addr;
+    unsigned char *ip = (unsigned char *)&sin->sin_addr.s_addr;
+    printf("%d %d %d %d\n", ip[0], ip[1], ip[2], ip[3]);
+
     int result = connect(sockfd,
             (struct sockaddr *)&con->server.addr,
             con->server.addr_len);
@@ -519,6 +632,63 @@ initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
                 display_sockaddr(&con->server.addr, server, sizeof(server)),
                 strerror(errno));
         abort_connection(con);
+        return;
+    }
+
+    if (con->proxy != NULL) {
+        /*
+        printf("Connected doing auth: %s\n", con->hostname);
+
+        char *x = "\x13";
+        for (int i = 0; i < 200; i++)
+            send(sockfd, x, 1, 0);
+
+        struct Buffer *input_buffer = new_buffer(256, loop);
+        struct Buffer *output_buffer = new_buffer(256, loop);
+
+        char *ptr = input_buffer->buffer;
+        ptr[0] = 0x05; ptr++;   //socks protocol version 5
+        ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
+        ptr[0] = 0x00; ptr++;   // no auth
+        ptr[0] = 0x02; ptr++;   // user pass auth
+        input_buffer->size = 4;
+        output_buffer->size = 2;
+
+        buffer_send(input_buffer, sockfd, 0, loop);
+        buffer_recv(output_buffer, sockfd, 0, loop);
+
+        //int written = send(sockfd, buffer, 4, 0);
+        //int read = recv(sockfd, resp, 2, 0);
+
+        printf("Socks server replied: %d and for auth %d\n", output_buffer->buffer[0], output_buffer->buffer[1]);
+        */
+
+        /*
+        // do auth
+        if (resp[1] == 0x02) {
+            ptr = buffer;
+            ptr[0] = 0x01; ptr++; // version number must be 1
+            ptr[0] = 0x05; ptr++; // send the length of username
+            strncpy(ptr, "marek", 6); ptr += 5; // username
+            ptr[0] = 0x08; ptr++; // send the length of password
+            strncpy(ptr, "redsocks", 9); ptr += 8; // password
+
+            int written = (int)send(sockfd, buffer, 2 + 5 + 1 + 8, 0);
+            printf("%d written\n", written);
+
+            for (int i = 0; i < 2 + 5 + 1 + 8; i++)
+                printf("%x ",  buffer[i]);
+
+            recv(sockfd, buffer, 2, 0);
+            printf("Socks server replied: ??%d it successed? :/ %d\n", buffer[0], buffer[1]);
+        }
+         */
+
+        struct ev_io *server_watcher = &con->server.watcher;
+        ev_io_init(server_watcher, connection_proxy_cb, sockfd, EV_WRITE);
+        con->server.watcher.data = con;
+        con->state = PROXY_HANDSHAKE;
+        ev_io_start(loop, server_watcher);
         return;
     }
 
@@ -584,6 +754,7 @@ close_connection(struct Connection *con, struct ev_loop *loop) {
     assert(con->state != NEW); /* only used during initialization */
 
     if (con->state == CONNECTED
+            || con->state == PROXY_HANDSHAKE
             || con->state == CLIENT_CLOSED)
         close_server_socket(con, loop);
 
