@@ -59,6 +59,16 @@ struct Connection {
     ev_tstamp established_timestamp;
     const char *proxy;
 
+    enum ProxyState {
+        GREETINGS,
+        GREETINGS_SEND,
+        AUTH,
+        AUTH_SEND,
+        CONNECT,
+        CONNECT_SEND,
+        DONE
+    } proxy_state;
+
     TAILQ_ENTRY(Connection) entries;
 };
 

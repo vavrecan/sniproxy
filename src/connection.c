@@ -219,24 +219,89 @@ connection_proxy_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             is_client ? close_client_socket : close_server_socket;
 
     if (con->state == PROXY_HANDSHAKE) {
-        struct Buffer *input_buffer = new_buffer(256, loop);
-        struct Buffer *output_buffer = new_buffer(256, loop);
+        struct Buffer *proxy_input_buffer = new_buffer(256, loop);
+        struct Buffer *proxy_output_buffer = new_buffer(256, loop);
+        proxy_input_buffer->len = 0;
 
-        char *ptr = input_buffer->buffer;
-        ptr[0] = 0x05; ptr++;   //socks protocol version 5
-        ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
-        ptr[0] = 0x00; ptr++;   // no auth
-        ptr[0] = 0x02; ptr++;   // user pass auth
-        input_buffer->size = 4;
-        output_buffer->size = 2;
+        if (revents & EV_READ && buffer_room(proxy_input_buffer)) {
+            ssize_t bytes_received = buffer_recv(proxy_input_buffer, w->fd, 0, loop);
+            printf("-- read: %d\n",bytes_received);
+            if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+                warn("recv(): %s, closing connection", strerror(errno));
+                close_socket(con, loop);
+                revents = 0; /* Clear revents so we don't try to send */
+            } else if (bytes_received == 0) { /* peer closed socket */
+                close_socket(con, loop);
+                revents = 0;
+            }
 
-        if (revents & EV_READ && buffer_room(input_buffer)) {
-            printf("-- readding\n");
+            if (con->proxy_state == GREETINGS_SEND) {
+                printf("received data %d\n", proxy_input_buffer->buffer[0]);
+                printf("received data %d\n", proxy_input_buffer->buffer[1]);
+                con->proxy_state = AUTH;
+            }
+            else if (con->proxy_state == AUTH_SEND) {
+                printf("auth received data %d\n", proxy_input_buffer->buffer[0]);
+                printf("auth received data %d\n", proxy_input_buffer->buffer[1]);
+                con->proxy_state = CONNECT;
+            }
+            else {
+                assert(bytes_received > 0);
+            }
         }
 
-        if (revents & EV_WRITE && buffer_len(output_buffer)) {
-            printf("-- writting\n");
+        if (con->proxy_state == NEW) {
+            // send connect
+            char *ptr = proxy_output_buffer->buffer;
+            ptr[0] = 0x05; ptr++;   //socks protocol version 5
+            ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
+            ptr[0] = 0x00; ptr++;   // no auth
+            ptr[0] = 0x02; ptr++;   // user pass auth
+            proxy_output_buffer->len = 4;
         }
+
+        if (con->proxy_state == AUTH) {
+            // username password auth
+            char *ptr = proxy_output_buffer->buffer;
+            ptr[0] = 0x01; ptr++; // version number must be 1
+            ptr[0] = 0x05; ptr++; // send the length of username
+            strncpy(ptr, "marek", 6); ptr += 5; // username
+            ptr[0] = 0x09; ptr++; // send the length of password
+            strncpy(ptr, "xxxxxxxxx", 9); ptr += 9; // password
+            proxy_output_buffer->len = 2+1+5+9;
+        }
+
+        if (con->proxy_state == CONNECT) {
+            // send connect command
+            char *ptr = proxy_output_buffer->buffer;
+            ptr[0] = 0x01; ptr++;
+            proxy_output_buffer->len = 1;
+        }
+
+        if (revents & EV_WRITE && buffer_len(proxy_output_buffer)) {
+            ssize_t bytes_transmitted = buffer_send(proxy_output_buffer, w->fd, 0, loop);
+            printf("-- written: %d\n", bytes_transmitted);
+            if (bytes_transmitted < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
+                printf("send(): %s, closing connection", strerror(errno));
+                close_socket(con, loop);
+            }
+
+            if (con->proxy_state == GREETINGS) {
+                con->proxy_state = GREETINGS_SEND;
+            }
+            else if (con->proxy_state == AUTH) {
+                con->proxy_state = AUTH_SEND;
+            }
+            else if (con->proxy_state == CONNECT) {
+                con->proxy_state = CONNECT_SEND;
+            }
+            else {
+                assert(0);
+            }
+        }
+
+        free_buffer(proxy_input_buffer);
+        free_buffer(proxy_output_buffer);
     }
     else {
         /* Receive first in case the socket was closed */
@@ -495,6 +560,7 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(1090);
 
         con->proxy = address_proxy(server_address);
+        con->proxy_state = GREETINGS;
     } else if (address_is_hostname(server_address)) {
 #ifndef HAVE_LIBUDNS
         warn("DNS lookups not supported unless sniproxy compiled with libudns");
@@ -636,68 +702,21 @@ initiate_server_connect(struct Connection *con, struct ev_loop *loop) {
     }
 
     if (con->proxy != NULL) {
-        /*
-        printf("Connected doing auth: %s\n", con->hostname);
-
-        char *x = "\x13";
-        for (int i = 0; i < 200; i++)
-            send(sockfd, x, 1, 0);
-
-        struct Buffer *input_buffer = new_buffer(256, loop);
-        struct Buffer *output_buffer = new_buffer(256, loop);
-
-        char *ptr = input_buffer->buffer;
-        ptr[0] = 0x05; ptr++;   //socks protocol version 5
-        ptr[0] = 0x02; ptr++;   // supporting 2 auth methods
-        ptr[0] = 0x00; ptr++;   // no auth
-        ptr[0] = 0x02; ptr++;   // user pass auth
-        input_buffer->size = 4;
-        output_buffer->size = 2;
-
-        buffer_send(input_buffer, sockfd, 0, loop);
-        buffer_recv(output_buffer, sockfd, 0, loop);
-
-        //int written = send(sockfd, buffer, 4, 0);
-        //int read = recv(sockfd, resp, 2, 0);
-
-        printf("Socks server replied: %d and for auth %d\n", output_buffer->buffer[0], output_buffer->buffer[1]);
-        */
-
-        /*
-        // do auth
-        if (resp[1] == 0x02) {
-            ptr = buffer;
-            ptr[0] = 0x01; ptr++; // version number must be 1
-            ptr[0] = 0x05; ptr++; // send the length of username
-            strncpy(ptr, "marek", 6); ptr += 5; // username
-            ptr[0] = 0x08; ptr++; // send the length of password
-            strncpy(ptr, "redsocks", 9); ptr += 8; // password
-
-            int written = (int)send(sockfd, buffer, 2 + 5 + 1 + 8, 0);
-            printf("%d written\n", written);
-
-            for (int i = 0; i < 2 + 5 + 1 + 8; i++)
-                printf("%x ",  buffer[i]);
-
-            recv(sockfd, buffer, 2, 0);
-            printf("Socks server replied: ??%d it successed? :/ %d\n", buffer[0], buffer[1]);
-        }
-         */
-
         struct ev_io *server_watcher = &con->server.watcher;
         ev_io_init(server_watcher, connection_proxy_cb, sockfd, EV_WRITE);
         con->server.watcher.data = con;
         con->state = PROXY_HANDSHAKE;
+
         ev_io_start(loop, server_watcher);
-        return;
     }
+    else {
+        struct ev_io *server_watcher = &con->server.watcher;
+        ev_io_init(server_watcher, connection_cb, sockfd, EV_WRITE);
+        con->server.watcher.data = con;
+        con->state = CONNECTED;
 
-    struct ev_io *server_watcher = &con->server.watcher;
-    ev_io_init(server_watcher, connection_cb, sockfd, EV_WRITE);
-    con->server.watcher.data = con;
-    con->state = CONNECTED;
-
-    ev_io_start(loop, server_watcher);
+        ev_io_start(loop, server_watcher);
+    }
 }
 
 /* Close client socket.
@@ -912,6 +931,11 @@ print_connection(FILE *file, const struct Connection *con) {
             break;
         case SERVER_CLOSED:
             fprintf(file, "SERVER_CLOSED %s %zu/%zu\t-\n",
+                    display_sockaddr(&con->client.addr, client, sizeof(client)),
+                    con->client.buffer->len, con->client.buffer->size);
+            break;
+        case PROXY_HANDSHAKE:
+            fprintf(file, "PROXY_HANDSHAKE%s %zu/%zu\t-\n",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
                     con->client.buffer->len, con->client.buffer->size);
             break;
