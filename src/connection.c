@@ -87,7 +87,7 @@ static void log_bad_request(struct Connection *, const char *, size_t, int);
 static void free_connection(struct Connection *);
 static void print_connection(FILE *, const struct Connection *);
 static void free_resolv_cb_data(struct resolv_cb_data *);
-
+static void free_proxy_connection(struct Connection *con);
 
 void
 init_connections() {
@@ -268,6 +268,10 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
                     proxy_input_buffer->buffer[1] == 0x00) {
                     // we are done and we can process on with normal connection
                     con->state = CONNECTED;
+
+                    // clean up proxy buffers
+                    free_proxy_connection(con);
+                    return;
                 }
                 else {
                     warn("recv(): proxy connection failed (%d %d %d %d)",
@@ -570,7 +574,7 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.username = malloc(80);
         strcpy(con->proxy.username, "marek");
         con->proxy.password = malloc(80);
-        strcpy(con->proxy.password, "x");
+        strcpy(con->proxy.password, "password");
 
         printf("%s:%s\n", con->proxy.username, con->proxy.password);
 
@@ -901,16 +905,27 @@ free_connection(struct Connection *con) {
     free_buffer(con->server.buffer);
     free((void *)con->hostname); /* cast away const'ness */
 
+    free_proxy_connection(con);
+    free(con);
+}
+
+static void
+free_proxy_connection(struct Connection *con) {
     free_buffer(con->proxy.input_buffer);
     free_buffer(con->proxy.output_buffer);
+
+    con->proxy.input_buffer = NULL;
+    con->proxy.output_buffer = NULL;
 
     if (con->proxy.username)
         free(con->proxy.username);
 
+    con->proxy.username = NULL;
+
     if (con->proxy.password)
         free(con->proxy.password);
 
-    free(con);
+    con->proxy.password = NULL;
 }
 
 static void
