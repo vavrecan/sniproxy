@@ -386,9 +386,8 @@ address_set_port(struct Address *addr, int port) {
             /* fall through */
         case HOSTNAME:
         case WILDCARD:
-            addr->port = port;
-            break;
         case PROXY:
+            addr->port = port;
             break;
         default:
             /* invalid Address type */

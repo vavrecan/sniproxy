@@ -88,6 +88,7 @@ static void free_connection(struct Connection *);
 static void print_connection(FILE *, const struct Connection *);
 static void free_resolv_cb_data(struct resolv_cb_data *);
 static void free_proxy_connection(struct Connection *con);
+static int parse_proxy_url(const char *url, char *hostname, int hostname_len, char *username, int username_len, char *password, int password_len);
 
 void
 init_connections() {
@@ -550,6 +551,47 @@ abort_connection(struct Connection *con) {
     con->state = SERVER_CLOSED;
 }
 
+static int parse_proxy_url(const char *url, char *hostname, int hostname_len, char *username, int username_len, char *password, int password_len) {
+    const char *p = url;
+
+    // strip protocol
+    p = strchr(p, ':');
+    if (p != NULL && strncmp(p, "://", 3) == 0)
+        p += 3;
+    else
+        return -1;
+
+    printf("url = %s\n", p);
+
+    username[0] = 0;
+    password[0] = 0;
+
+    // parse username password
+    const char *userpass = p;
+    if ((userpass = strchr(p, '@')) != NULL) {
+        // check if also password is provided
+        if ((userpass = strchr(userpass, ':')) != 0) {
+
+        }
+
+        // advance pointer
+        p = strchr(p, '@') + 1;
+    }
+
+    // not enough size to fit hostname (null byte included)
+    if (strlen(p) > hostname_len + 1)
+        return -1;
+
+    strncpy(hostname, p, strlen(p));
+    hostname[strlen(p)] = 0;
+
+    printf("username = %s\n", username);
+    printf("password = %s\n", password);
+    printf("hostname = %s\n", hostname);
+
+    return 1;
+}
+
 static void
 resolve_server_address(struct Connection *con, struct ev_loop *loop) {
     /* TODO avoid extra malloc in listener_lookup_server_address() */
@@ -565,10 +607,12 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         // TODO PARSE PROXY HERE
         const char * proxy = address_proxy(server_address);
 
+        int port = address_port(server_address);
         const char * host = "192.243.111.140";
+
         inet_pton(AF_INET, host, &((struct sockaddr_in *)&con->server.addr)->sin_addr);
         ((struct sockaddr_in *)&con->server.addr)->sin_family = AF_INET;
-        (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(1090);
+        (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(port);
 
         // TODO set username and password if we have it and pass it
         con->proxy.username = malloc(80);
@@ -576,7 +620,7 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.password = malloc(80);
         strcpy(con->proxy.password, "password");
 
-        printf("%s:%s\n", con->proxy.username, con->proxy.password);
+        printf("%s:%s => %d\n", con->proxy.username, con->proxy.password, port);
 
         con->proxy.input_buffer = new_buffer(256, loop);
         if (con->proxy.input_buffer == NULL) {
