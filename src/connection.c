@@ -557,8 +557,12 @@ static int parse_proxy_url(const char *url, char *host, int in_host_len, char *u
                             int in_user_len, char *pass, int in_pass_len) {
     // TODO parse url without username and password
     user[0] = 0; pass[0] = 0; host[0] = 0;
+
     // TODO handle char buffer limits better way
-    sscanf(url, "socks5://%79[^:]:%79[^@]@%255[^\n]", user, pass, host);
+    int res = sscanf(url, "socks5://%79[^:]:%79[^@]@%255[^\n]", user, pass, host);
+    if (res != 3) {
+        sscanf(url, "socks5://%255[^\n]", host);
+    }
 
     if (host[0] == 0)
         return -1;
