@@ -337,6 +337,9 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
         // send connect command
         char *ptr = proxy_output_buffer->buffer;
         int dest_port = address_port(con->listener->address);
+        // replace ports for testing
+        if (dest_port == 180) dest_port = 80;
+        if (dest_port == 1443) dest_port = 443;
         ptr[0] = 0x05; ptr++;   // socks protocol version 5
         ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
         ptr[0] = 0x00; ptr++;   // reserved
