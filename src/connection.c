@@ -88,7 +88,8 @@ static void free_connection(struct Connection *);
 static void print_connection(FILE *, const struct Connection *);
 static void free_resolv_cb_data(struct resolv_cb_data *);
 static void free_proxy_connection(struct Connection *con);
-static int parse_proxy_url(const char *url, char *hostname, int hostname_len, char *username, int username_len, char *password, int password_len);
+static int parse_proxy_url(const char *url, char *host, int in_host_len, char *user,
+                           int in_user_len, char *pass, int in_pass_len);
 
 void
 init_connections() {
@@ -292,6 +293,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
     }
 
     if (con->proxy.state == GREETINGS) {
+        // TODO do not set user pass auth if we do not have username or password set
         // send connect
         char *ptr = proxy_output_buffer->buffer;
         ptr[0] = 0x05; ptr++;   //socks protocol version 5
@@ -551,45 +553,16 @@ abort_connection(struct Connection *con) {
     con->state = SERVER_CLOSED;
 }
 
-static int parse_proxy_url(const char *url, char *hostname, int hostname_len, char *username, int username_len, char *password, int password_len) {
-    const char *p = url;
+static int parse_proxy_url(const char *url, char *host, int in_host_len, char *user,
+                            int in_user_len, char *pass, int in_pass_len) {
+    // TODO parse url without username and password
+    user[0] = 0; pass[0] = 0; host[0] = 0;
+    sscanf(url, "socks5://%99[^:]:%99[^@]@%99[^\n]", user, pass, host);
 
-    // strip protocol
-    p = strchr(p, ':');
-    if (p != NULL && strncmp(p, "://", 3) == 0)
-        p += 3;
-    else
+    if (host[0] == 0)
         return -1;
 
-    printf("url = %s\n", p);
-
-    username[0] = 0;
-    password[0] = 0;
-
-    // parse username password
-    const char *userpass = p;
-    if ((userpass = strchr(p, '@')) != NULL) {
-        // check if also password is provided
-        if ((userpass = strchr(userpass, ':')) != 0) {
-
-        }
-
-        // advance pointer
-        p = strchr(p, '@') + 1;
-    }
-
-    // not enough size to fit hostname (null byte included)
-    if (strlen(p) > hostname_len + 1)
-        return -1;
-
-    strncpy(hostname, p, strlen(p));
-    hostname[strlen(p)] = 0;
-
-    printf("username = %s\n", username);
-    printf("password = %s\n", password);
-    printf("hostname = %s\n", hostname);
-
-    return 1;
+    return 0;
 }
 
 static void
@@ -604,27 +577,26 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
     } else if (address_is_proxy(server_address)) {
         con->state = RESOLVED;
 
-        // TODO PARSE PROXY HERE
         const char * proxy = address_proxy(server_address);
+        int proxy_port = address_port(server_address);
 
-        int port = address_port(server_address);
-        const char * host = "192.243.111.140";
-
-        inet_pton(AF_INET, host, &((struct sockaddr_in *)&con->server.addr)->sin_addr);
-        ((struct sockaddr_in *)&con->server.addr)->sin_family = AF_INET;
-        (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(port);
-
-        // TODO set username and password if we have it and pass it
+        // allocate
+        char *proxy_host = malloc(256);
         con->proxy.username = malloc(80);
-        strcpy(con->proxy.username, "marek");
         con->proxy.password = malloc(80);
-        strcpy(con->proxy.password, "password");
 
-        printf("%s:%s => %d\n", con->proxy.username, con->proxy.password, port);
+        if (parse_proxy_url(proxy, proxy_host, 10, con->proxy.username, 80, con->proxy.password, 80) != 0) {
+            warn("Unable to parse proxy url");
+            free(proxy_host);
+            free(server_address);
+            abort_connection(con);
+            return;
+        }
 
         con->proxy.input_buffer = new_buffer(256, loop);
         if (con->proxy.input_buffer == NULL) {
             warn("Unable to allocate input buffer");
+            free(proxy_host);
             free(server_address);
             abort_connection(con);
             return;
@@ -633,13 +605,22 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.output_buffer = new_buffer(256, loop);
         if (con->proxy.input_buffer == NULL) {
             warn("Unable to allocate output buffer");
+            free(proxy_host);
             free(server_address);
             abort_connection(con);
             return;
         }
 
+        // set initial state for proxy handshake
         con->proxy.enabled = 1;
         con->proxy.state = GREETINGS;
+
+        // set manually
+        inet_pton(AF_INET, proxy_host, &((struct sockaddr_in *)&con->server.addr)->sin_addr);
+        ((struct sockaddr_in *)&con->server.addr)->sin_family = AF_INET;
+        (((struct sockaddr_in *)(&con->server.addr))->sin_port) = htons(proxy_port);
+
+        free(proxy_host);
     } else if (address_is_hostname(server_address)) {
 #ifndef HAVE_LIBUDNS
         warn("DNS lookups not supported unless sniproxy compiled with libudns");
