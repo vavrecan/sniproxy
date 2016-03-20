@@ -373,13 +373,13 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
                 proxy_input_buffer->len = 0;
                 con->proxy.state = AUTH_SEND;
 
-                info("proxy send auth");
+                info("proxy send auth %s:***", con->proxy.username);
             }
             else if (con->proxy.state == CONNECT) {
                 proxy_input_buffer->len = 0;
                 con->proxy.state = CONNECT_SEND;
 
-                info("proxy send connect");
+                info("proxy send connect %s:%d", con->hostname, address_port(con->listener->address));
             }
             else {
                 warn("send(): got unknown proxy state when writting");
