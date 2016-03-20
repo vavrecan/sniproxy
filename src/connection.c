@@ -557,7 +557,8 @@ static int parse_proxy_url(const char *url, char *host, int in_host_len, char *u
                             int in_user_len, char *pass, int in_pass_len) {
     // TODO parse url without username and password
     user[0] = 0; pass[0] = 0; host[0] = 0;
-    sscanf(url, "socks5://%99[^:]:%99[^@]@%99[^\n]", user, pass, host);
+    // TODO handle char buffer limits better way
+    sscanf(url, "socks5://%79[^:]:%79[^@]@%255[^\n]", user, pass, host);
 
     if (host[0] == 0)
         return -1;
@@ -585,7 +586,7 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.username = malloc(80);
         con->proxy.password = malloc(80);
 
-        if (parse_proxy_url(proxy, proxy_host, 10, con->proxy.username, 80, con->proxy.password, 80) != 0) {
+        if (parse_proxy_url(proxy, proxy_host, 256, con->proxy.username, 80, con->proxy.password, 80) != 0) {
             warn("Unable to parse proxy url");
             free(proxy_host);
             free(server_address);
