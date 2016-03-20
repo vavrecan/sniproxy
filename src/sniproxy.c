@@ -260,10 +260,13 @@ signal_cb(struct ev_loop *loop, struct ev_signal *w, int revents) {
         switch (w->signum) {
             case SIGHUP:
                 reopen_loggers();
-                reload_config(config, loop);
+                reload_config(config, loop, 0);
                 break;
             case SIGUSR1:
                 print_connections();
+                break;
+            case SIGUSR2:
+                reload_config(config, loop, 1);
                 break;
             case SIGINT:
             case SIGTERM:

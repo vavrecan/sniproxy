@@ -267,7 +267,7 @@ free_config(struct Config *config, struct ev_loop *loop) {
 }
 
 void
-reload_config(struct Config *config, struct ev_loop *loop) {
+reload_config(struct Config *config, struct ev_loop *loop, int tables_only) {
     notice("reloading configuration from %s", config->filename);
 
     struct Config *new_config = init_config(config->filename, loop);
@@ -276,14 +276,18 @@ reload_config(struct Config *config, struct ev_loop *loop) {
         return;
     }
 
-    /* update access_log */
-    logger_ref_put(config->access_log);
-    config->access_log = logger_ref_get(new_config->access_log);
+    if (tables_only) {
+        reload_tables(&config->tables, &new_config->tables);
+    }
+    else {
+        logger_ref_put(config->access_log);
+        config->access_log = logger_ref_get(new_config->access_log);
 
-    reload_tables(&config->tables, &new_config->tables);
+        reload_tables(&config->tables, &new_config->tables);
 
-    listeners_reload(&config->listeners, &new_config->listeners,
-            &config->tables, loop);
+        listeners_reload(&config->listeners, &new_config->listeners,
+                &config->tables, loop);
+    }
 
     free_config(new_config, loop);
 }

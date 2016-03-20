@@ -45,7 +45,7 @@ struct Config {
 };
 
 struct Config *init_config(const char *, struct ev_loop *);
-void reload_config(struct Config *, struct ev_loop *);
+void reload_config(struct Config *, struct ev_loop *, int);
 void free_config(struct Config *, struct ev_loop *);
 void print_config(FILE *, struct Config *);
 
