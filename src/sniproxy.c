@@ -60,6 +60,7 @@ static const char *default_username = "daemon";
 static struct Config *config;
 static struct ev_signal sighup_watcher;
 static struct ev_signal sigusr1_watcher;
+static struct ev_signal sigusr2_watcher;
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
 
@@ -123,10 +124,12 @@ main(int argc, char **argv) {
 
     ev_signal_init(&sighup_watcher, signal_cb, SIGHUP);
     ev_signal_init(&sigusr1_watcher, signal_cb, SIGUSR1);
+    ev_signal_init(&sigusr2_watcher, signal_cb, SIGUSR2);
     ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
     ev_signal_init(&sigterm_watcher, signal_cb, SIGTERM);
     ev_signal_start(EV_DEFAULT, &sighup_watcher);
     ev_signal_start(EV_DEFAULT, &sigusr1_watcher);
+    ev_signal_start(EV_DEFAULT, &sigusr2_watcher);
     ev_signal_start(EV_DEFAULT, &sigint_watcher);
     ev_signal_start(EV_DEFAULT, &sigterm_watcher);
 
