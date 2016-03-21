@@ -245,7 +245,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
             //printf("recv: %d\n",bytes_received);
 
             if (con->proxy.state == GREETINGS_SEND) {
-                info("proxy greeting response");
+                debug("proxy greeting response");
 
                 // check response, 0x02 require auth and 0x00 process without auth
                 if (proxy_input_buffer->buffer[0] == 0x05 &&
@@ -263,7 +263,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
                 }
             }
             else if (con->proxy.state == AUTH_SEND) {
-                info("proxy auth response");
+                debug("proxy auth response");
 
                 // check authorization
                 if (bytes_received > 1 && proxy_input_buffer->buffer[1] == 0x00) {
@@ -277,7 +277,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
                 }
             }
             else if (con->proxy.state == CONNECT_SEND) {
-                info("proxy connect response");
+                debug("proxy connect response");
 
                 // we always received more than 7 bytes (protocol,
                 if (bytes_received > 7 && proxy_input_buffer->buffer[0] == 0x05 &&
@@ -368,19 +368,19 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
                 proxy_input_buffer->len = 0;
                 con->proxy.state = GREETINGS_SEND;
 
-                info("proxy send greeting");
+                debug("proxy send greeting");
             }
             else if (con->proxy.state == AUTH) {
                 proxy_input_buffer->len = 0;
                 con->proxy.state = AUTH_SEND;
 
-                info("proxy send auth %s:***", con->proxy.username);
+                debug("proxy send auth %s:***", con->proxy.username);
             }
             else if (con->proxy.state == CONNECT) {
                 proxy_input_buffer->len = 0;
                 con->proxy.state = CONNECT_SEND;
 
-                info("proxy send connect %s:%d", con->hostname, address_port(con->listener->address));
+                debug("proxy send connect %s:%d", con->hostname, con->proxy.dest_port);
             }
             else {
                 warn("send(): got unknown proxy state when writting");
