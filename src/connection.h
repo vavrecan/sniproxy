@@ -73,6 +73,7 @@ struct Connection {
         } state;
         char *username;
         char *password;
+        int dest_port;
     } proxy;
 
     TAILQ_ENTRY(Connection) entries;

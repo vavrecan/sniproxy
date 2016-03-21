@@ -337,10 +337,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
     else if (con->proxy.state == CONNECT) {
         // send connect command
         char *ptr = proxy_output_buffer->buffer;
-        int dest_port = address_port(con->listener->address);
-        // replace ports for testing
-        if (dest_port == 180) dest_port = 80;
-        if (dest_port == 1443) dest_port = 443;
+        int dest_port = con->proxy.dest_port;
         ptr[0] = 0x05; ptr++;   // socks protocol version 5
         ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
         ptr[0] = 0x00; ptr++;   // reserved
@@ -573,8 +570,6 @@ resolve_destination(int sockfd, char **hostname) {
     struct sockaddr_in destaddr;
     socklen_t socklen = sizeof(destaddr);
 
-    // ntohs((destaddr).sin_port) TODO take this to our current HAX !! :D
-
     // get original destination IP address
     if (getsockopt(sockfd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0) {
         char host[256] = {0};
@@ -730,6 +725,14 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         // set initial state for proxy handshake
         con->proxy.enabled = 1;
         con->proxy.state = GREETINGS;
+
+        // get original destination port address or get listener address
+        struct sockaddr_in destaddr;
+        socklen_t socklen = sizeof(destaddr);
+        if (getsockopt(con->client.watcher.fd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0)
+            con->proxy.dest_port = ntohs((destaddr).sin_port);
+        else
+            con->proxy.dest_port = address_port(con->listener->address);
 
         // set manually
         inet_pton(AF_INET, proxy_host, &((struct sockaddr_in *)&con->server.addr)->sin_addr);
