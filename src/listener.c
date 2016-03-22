@@ -49,6 +49,15 @@
 #include "tls.h"
 #include "http.h"
 
+static const char none_message[] = "\0";
+static const struct Protocol none_protocol_st = {
+        .name = "none",
+        .default_port = 190,
+        .parse_packet = NULL,
+        .abort_message = none_message,
+        .abort_message_len = sizeof(none_message)
+};
+const struct Protocol *const none_protocol = &none_protocol_st;
 
 static void close_listener(struct ev_loop *, struct Listener *);
 static void accept_cb(struct ev_loop *, struct ev_io *, int);
@@ -244,6 +253,8 @@ int
 accept_listener_protocol(struct Listener *listener, char *protocol) {
     if (strncasecmp(protocol, http_protocol->name, strlen(protocol)) == 0)
         listener->protocol = http_protocol;
+    else if (strncasecmp(protocol, none_protocol->name, strlen(protocol)) == 0)
+        listener->protocol = none_protocol;
     else
         listener->protocol = tls_protocol;
 
@@ -388,7 +399,7 @@ valid_listener(const struct Listener *listener) {
             return 0;
     }
 
-    if (listener->protocol != tls_protocol && listener->protocol != http_protocol) {
+    if (listener->protocol != tls_protocol && listener->protocol != http_protocol && listener->protocol != none_protocol) {
         err("Invalid protocol");
         return 0;
     }

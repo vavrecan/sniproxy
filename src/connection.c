@@ -77,7 +77,7 @@ static void reactivate_proxy_watcher(struct ev_loop *, struct ev_io *,
 static void connection_cb(struct ev_loop *, struct ev_io *, int);
 static void resolv_cb(struct Address *, void *);
 static void reactivate_watchers(struct Connection *, struct ev_loop *);
-static int resolve_destination(int, char **);
+static int resolve_destination(int, char **, int);
 static void parse_client_request(struct Connection *);
 static void resolve_server_address(struct Connection *, struct ev_loop *);
 static void initiate_server_connect(struct Connection *, struct ev_loop *);
@@ -561,7 +561,7 @@ reactivate_watcher(struct ev_loop *loop, struct ev_io *w,
 }
 
 static int
-resolve_destination(int sockfd, char **hostname) {
+resolve_destination(int sockfd, char **hostname, int require_name) {
     if (*hostname != NULL) {
         warn("hostname buffer is already allocated");
         return -1;
@@ -576,7 +576,7 @@ resolve_destination(int sockfd, char **hostname) {
 
         // get reversed look up hostname
         if (getnameinfo((const struct sockaddr *)&destaddr, sizeof destaddr, host,
-                        sizeof host, NULL, 0, NI_NAMEREQD) == 0) {
+                        sizeof host, NULL, 0, require_name == 1 ? NI_NAMEREQD : 0) == 0) {
             size_t host_len = strlen(host);
             *hostname = malloc(host_len + 1);
             if (*hostname == NULL) {
@@ -604,12 +604,17 @@ parse_client_request(struct Connection *con) {
     const char *payload;
     ssize_t payload_len = buffer_coalesce(con->client.buffer, (const void **) &payload);
     char *hostname = NULL;
+    int result;
 
-    int result = con->listener->protocol->parse_packet(payload, payload_len, &hostname);
+    if (con->listener->protocol == none_protocol) {
+        result = resolve_destination(con->client.watcher.fd, &hostname, 0);
+    } else {
+        result = con->listener->protocol->parse_packet(payload, payload_len, &hostname);
+    }
 
     // lets give it one more chance and resolve from socket destination
     if (result == -2) {
-        result = resolve_destination(con->client.watcher.fd, &hostname);
+        result = resolve_destination(con->client.watcher.fd, &hostname, 1);
         // handle original error
         if (result < 0)
             result = -2;

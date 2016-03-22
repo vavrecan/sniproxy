@@ -32,6 +32,7 @@
 #include "table.h"
 
 SLIST_HEAD(Listener_head, Listener);
+const struct Protocol *const none_protocol;
 
 struct Listener {
     /* Configuration fields */
