@@ -49,7 +49,7 @@
 #include "tls.h"
 #include "http.h"
 
-static const char none_message[] = "\0";
+static const char none_message[] = "";
 static const struct Protocol none_protocol_st = {
         .name = "none",
         .default_port = 190,
