@@ -671,7 +671,8 @@ static void
 abort_connection(struct Connection *con) {
     assert(client_socket_open(con));
 
-    buffer_push(con->server.buffer,
+    if (con->listener->protocol != none_protocol)
+        buffer_push(con->server.buffer,
             con->listener->protocol->abort_message,
             con->listener->protocol->abort_message_len);
 
