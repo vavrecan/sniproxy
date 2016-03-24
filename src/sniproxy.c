@@ -87,7 +87,7 @@ main(int argc, char **argv) {
                 printf("sniproxy %s\n", sniproxy_version);
 #ifdef HAVE_LIBUDNS
                 printf("compiled with udns support\n");
-#else
+#endif
                 return EXIT_SUCCESS;
             default:
                 usage();
