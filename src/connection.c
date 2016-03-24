@@ -816,8 +816,14 @@ resolv_cb(struct Address *result, void *data) {
     } else {
         assert(address_is_sockaddr(result));
 
-        /* copy port from server_address */
-        address_set_port(result, address_port(cb_data->address));
+        struct sockaddr_in destaddr;
+        socklen_t socklen = sizeof(destaddr);
+        if (getsockopt(con->client.watcher.fd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0)
+            /* get real port from destination */
+            address_set_port(result, ntohs((destaddr).sin_port));
+        else
+            /* copy port from server_address */
+            address_set_port(result, address_port(cb_data->address));
 
         con->server.addr_len = address_sa_len(result);
         assert(con->server.addr_len <= sizeof(con->server.addr));
