@@ -416,7 +416,7 @@ connection_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
         proxy_handshake(loop, w, &revents);
     }
 
-    if (con->state != PROXY_HANDSHAKE) {
+    if (con->state != PROXY_HANDSHAKE || is_client) {
         /* Receive first in case the socket was closed */
         if (revents & EV_READ && buffer_room(input_buffer)) {
             ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
