@@ -421,8 +421,8 @@ connection_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
         if (revents & EV_READ && buffer_room(input_buffer)) {
             ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
             if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
-                warn("recv(): %s, closing connection",
-                     strerror(errno));
+                warn("recv(): %s, closing connection, proxy handshake: %s",
+                     strerror(errno), con->state == PROXY_HANDSHAKE ? "true" : "false");
 
                 close_socket(con, loop);
                 revents = 0; /* Clear revents so we don't try to send */
