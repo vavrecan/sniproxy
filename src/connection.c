@@ -234,7 +234,7 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
     if (*revents & EV_READ && buffer_room(proxy_input_buffer)) {
         ssize_t bytes_received = buffer_recv(proxy_input_buffer, w->fd, 0, loop);
         if (bytes_received < 0 && !IS_TEMPORARY_SOCKERR(errno)) {
-            warn("recv(): %s, closing connection", strerror(errno));
+            warn("recv(): %s, proxy closing connection for %s", strerror(errno), con->hostname);
             close_socket(con, loop);
             *revents = 0; /* Clear *revents so we don't try to send */
         } else if (bytes_received == 0) { /* peer closed socket */
@@ -416,7 +416,7 @@ connection_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
         proxy_handshake(loop, w, &revents);
     }
 
-    if (con->state != PROXY_HANDSHAKE || is_client) {
+    if (con->state != PROXY_HANDSHAKE) {
         /* Receive first in case the socket was closed */
         if (revents & EV_READ && buffer_room(input_buffer)) {
             ssize_t bytes_received = buffer_recv(input_buffer, w->fd, 0, loop);
