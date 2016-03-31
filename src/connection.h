@@ -57,6 +57,7 @@ struct Connection {
     size_t hostname_len;
     struct ResolvQuery *query_handle;
     ev_tstamp established_timestamp;
+    struct sockaddr_in original_dest;
 
     struct {
         int enabled;

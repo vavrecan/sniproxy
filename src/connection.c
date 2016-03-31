@@ -77,7 +77,7 @@ static void reactivate_proxy_watcher(struct ev_loop *, struct ev_io *,
 static void connection_cb(struct ev_loop *, struct ev_io *, int);
 static void resolv_cb(struct Address *, void *);
 static void reactivate_watchers(struct Connection *, struct ev_loop *);
-static int resolve_destination(int, char **, int);
+static int reverse_hostname(struct Connection *, char **, int);
 static void parse_client_request(struct Connection *);
 static void resolve_server_address(struct Connection *, struct ev_loop *);
 static void initiate_server_connect(struct Connection *, struct ev_loop *);
@@ -93,6 +93,7 @@ static void print_connection(FILE *, const struct Connection *);
 static void free_resolv_cb_data(struct resolv_cb_data *);
 static void free_proxy_connection(struct Connection *);
 static int parse_proxy_url(const char *, char *, int, char *, int, char *, int);
+static void resolve_original_destination(struct Connection *con);
 
 void
 init_connections() {
@@ -561,22 +562,19 @@ reactivate_watcher(struct ev_loop *loop, struct ev_io *w,
 }
 
 static int
-resolve_destination(int sockfd, char **hostname, int return_ip) {
+reverse_hostname(struct Connection *con, char **hostname, int return_ip) {
     if (*hostname != NULL) {
         warn("hostname buffer is already allocated");
         return -1;
     }
 
-    struct sockaddr_in destaddr;
-    socklen_t socklen = sizeof(destaddr);
-
     // get original destination IP address
-    if (getsockopt(sockfd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0) {
+    if (con->original_dest.sin_family != AF_UNSPEC) {
         char host[256] = {0};
 
         // either return as ip or get reversed look up hostname
         if (return_ip == 1) {
-            char *ip = inet_ntoa(destaddr.sin_addr);
+            char *ip = inet_ntoa(con->original_dest.sin_addr);
 
             size_t host_len = strlen(ip);
             *hostname = malloc(host_len + 1);
@@ -589,7 +587,7 @@ resolve_destination(int sockfd, char **hostname, int return_ip) {
             info("resolved %s using iptables fallback", *hostname);
             return (int)host_len;
         }
-        else if (getnameinfo((const struct sockaddr *)&destaddr, sizeof destaddr, host,
+        else if (getnameinfo((const struct sockaddr *)&con->original_dest, sizeof con->original_dest, host,
                         sizeof host, NULL, 0, NI_NAMEREQD) == 0) {
             size_t host_len = strlen(host);
             *hostname = malloc(host_len + 1);
@@ -602,7 +600,7 @@ resolve_destination(int sockfd, char **hostname, int return_ip) {
             return (int)host_len;
         }
         else {
-            char *ip = inet_ntoa(destaddr.sin_addr);
+            char *ip = inet_ntoa(con->original_dest.sin_addr);
             warn("unable to getnameinfo() of %s", ip);
             return -1;
         }
@@ -614,21 +612,31 @@ resolve_destination(int sockfd, char **hostname, int return_ip) {
 }
 
 static void
+resolve_original_destination(struct Connection *con) {
+    socklen_t socklen = sizeof(con->original_dest);
+    if (getsockopt(con->client.watcher.fd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &con->original_dest, &socklen) != 0) {
+        con->original_dest.sin_family = AF_UNSPEC;
+    }
+}
+
+static void
 parse_client_request(struct Connection *con) {
     const char *payload;
     ssize_t payload_len = buffer_coalesce(con->client.buffer, (const void **) &payload);
     char *hostname = NULL;
     int result;
 
+    resolve_original_destination(con);
+
     if (con->listener->protocol == none_protocol) {
-        result = resolve_destination(con->client.watcher.fd, &hostname, 1);
+        result = reverse_hostname(con, &hostname, 1);
     } else {
         result = con->listener->protocol->parse_packet(payload, payload_len, &hostname);
     }
 
     // lets give it one more chance and resolve from socket destination
     if (result == -2) {
-        result = resolve_destination(con->client.watcher.fd, &hostname, 0);
+        result = reverse_hostname(con, &hostname, 0);
         // handle original error
         if (result < 0)
             result = -2;
@@ -636,21 +644,25 @@ parse_client_request(struct Connection *con) {
 
     if (result < 0) {
         char client[INET6_ADDRSTRLEN + 8];
+        char address[ADDRESS_BUFFER_SIZE];
 
         if (result == -1) { /* incomplete request */
             if (buffer_room(con->client.buffer) > 0)
                 return; /* give client a chance to send more data */
 
-            warn("Request from %s exceeded %ld byte buffer size",
+            warn("Request from %s exceeded %ld byte buffer size (%s)",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
-                    buffer_size(con->client.buffer));
+                    buffer_size(con->client.buffer),
+                    display_sockaddr(&con->original_dest, address, sizeof(address)));
         } else if (result == -2) {
-            warn("Request from %s did not include a hostname",
-                    display_sockaddr(&con->client.addr, client, sizeof(client)));
-        } else {
-            warn("Unable to parse request from %s: parse_packet returned %d",
+            warn("Request from %s did not include a hostname (%s)",
                     display_sockaddr(&con->client.addr, client, sizeof(client)),
-                    result);
+                    display_sockaddr(&con->original_dest, address, sizeof(address)));
+        } else {
+            warn("Unable to parse request from %s: parse_packet returned %d (%s)",
+                    display_sockaddr(&con->client.addr, client, sizeof(client)),
+                    result,
+                    display_sockaddr(&con->original_dest, address, sizeof(address)));
 
             if (con->listener->log_bad_requests)
                 log_bad_request(con, payload, payload_len, result);
@@ -747,10 +759,8 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.state = GREETINGS;
 
         // get original destination port address or get listener address
-        struct sockaddr_in destaddr;
-        socklen_t socklen = sizeof(destaddr);
-        if (getsockopt(con->client.watcher.fd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0)
-            con->proxy.dest_port = ntohs((destaddr).sin_port);
+        if (con->original_dest.sin_family != AF_UNSPEC)
+            con->proxy.dest_port = ntohs((con->original_dest).sin_port);
         else
             con->proxy.dest_port = address_port(con->listener->address);
 
@@ -816,11 +826,9 @@ resolv_cb(struct Address *result, void *data) {
     } else {
         assert(address_is_sockaddr(result));
 
-        struct sockaddr_in destaddr;
-        socklen_t socklen = sizeof(destaddr);
-        if (getsockopt(con->client.watcher.fd, SOL_IP, 80/*SO_ORIGINAL_DST*/, &destaddr, &socklen) == 0)
+        if (con->original_dest.sin_family != AF_UNSPEC)
             /* get real port from destination */
-            address_set_port(result, ntohs((destaddr).sin_port));
+            address_set_port(result, ntohs((con->original_dest).sin_port));
         else
             /* copy port from server_address */
             address_set_port(result, address_port(cb_data->address));
@@ -1015,6 +1023,7 @@ log_connection(struct Connection *con) {
     char client_address[ADDRESS_BUFFER_SIZE];
     char listener_address[ADDRESS_BUFFER_SIZE];
     char server_address[ADDRESS_BUFFER_SIZE];
+    char original_address[ADDRESS_BUFFER_SIZE];
 
     if (con->client.buffer->last_recv > con->server.buffer->last_recv)
         duration = con->client.buffer->last_recv - con->established_timestamp;
@@ -1024,13 +1033,15 @@ log_connection(struct Connection *con) {
     display_sockaddr(&con->client.addr, client_address, sizeof(client_address));
     display_address(con->listener->address, listener_address, sizeof(listener_address));
     display_sockaddr(&con->server.addr, server_address, sizeof(server_address));
+    display_sockaddr(&con->original_dest, original_address, sizeof(original_address));
 
     log_msg(con->listener->access_log,
            LOG_NOTICE,
-           "%s -> %s -> %s [%.*s] %ld/%ld bytes tx %ld/%ld bytes rx %1.3f seconds",
+           "%s -> %s -> %s (%s) [%.*s] %ld/%ld bytes tx %ld/%ld bytes rx %1.3f seconds",
            client_address,
            listener_address,
            server_address,
+           original_address,
            (int)con->hostname_len,
            con->hostname,
            con->server.buffer->tx_bytes,
