@@ -728,10 +728,14 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.username = malloc(80);
         con->proxy.password = malloc(80);
 
+        if (proxy_host == NULL || con->proxy.username == NULL || con->proxy.password == NULL) {
+            warn("Unable to allocate buffer for proxy host, username or password");
+            abort_connection(con);
+            return;
+        }
+
         if (parse_proxy_url(proxy, proxy_host, 256, con->proxy.username, 80, con->proxy.password, 80) != 0) {
             warn("Unable to parse proxy url");
-            free(proxy_host);
-            free(server_address);
             abort_connection(con);
             return;
         }
@@ -739,17 +743,13 @@ resolve_server_address(struct Connection *con, struct ev_loop *loop) {
         con->proxy.input_buffer = new_buffer(256, loop);
         if (con->proxy.input_buffer == NULL) {
             warn("Unable to allocate input buffer");
-            free(proxy_host);
-            free(server_address);
             abort_connection(con);
             return;
         }
 
         con->proxy.output_buffer = new_buffer(256, loop);
-        if (con->proxy.input_buffer == NULL) {
+        if (con->proxy.output_buffer == NULL) {
             warn("Unable to allocate output buffer");
-            free(proxy_host);
-            free(server_address);
             abort_connection(con);
             return;
         }
