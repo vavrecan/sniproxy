@@ -339,6 +339,8 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
         // send connect command
         char *ptr = proxy_output_buffer->buffer;
         int dest_port = con->proxy.dest_port;
+        size_t len = 7;
+
         ptr[0] = 0x05; ptr++;   // socks protocol version 5
         ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
         ptr[0] = 0x00; ptr++;   // reserved
@@ -347,20 +349,21 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
             info("using original destination for proxy %s / %d", con->hostname, (int)sizeof(con->original_dest.sin_addr));
 
             ptr[0] = 0x01; ptr++;   // ipv4
-            memcpy(ptr, &con->original_dest.sin_addr.s_addr, sizeof(con->original_dest.sin_addr));  // 4 bytes ipv4
-            ptr += sizeof(con->original_dest.sin_addr);
+            memcpy(ptr, &con->original_dest.sin_addr.s_addr, sizeof(con->original_dest.sin_addr)); ptr += sizeof(con->original_dest.sin_addr);
+            len += sizeof(con->original_dest.sin_addr);
         }
         else {
             ptr[0] = 0x03; ptr++;   // domain name
             ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
             strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
+            len += con->hostname_len;
         }
 
         ptr[0] = (unsigned char)(dest_port >> 8); ptr++;   // 2 bytes port number
         ptr[0] = (unsigned char)(dest_port & 0xFF); ptr++;
 
         proxy_output_buffer->head = 0;
-        proxy_output_buffer->len = 7+con->hostname_len;
+        proxy_output_buffer->len = len;
     }
 
     if (*revents & EV_WRITE && !buffer_len(proxy_output_buffer)) {
