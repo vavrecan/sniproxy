@@ -342,9 +342,20 @@ static void proxy_handshake(struct ev_loop *loop, struct ev_io *w, int *revents)
         ptr[0] = 0x05; ptr++;   // socks protocol version 5
         ptr[0] = 0x01; ptr++;   // establish a TCP/IP stream connection
         ptr[0] = 0x00; ptr++;   // reserved
-        ptr[0] = 0x03; ptr++;   // domain name
-        ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
-        strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
+
+        if (con->proxy.use_original_dest && con->original_dest.sin_family == AF_INET) {
+            info("using original destination for proxy %s / %d", con->hostname, (int)sizeof(con->original_dest.sin_addr));
+
+            ptr[0] = 0x01; ptr++;   // ipv4
+            memcpy(ptr, &con->original_dest.sin_addr.s_addr, sizeof(con->original_dest.sin_addr));  // 4 bytes ipv4
+            ptr += sizeof(con->original_dest.sin_addr);
+        }
+        else {
+            ptr[0] = 0x03; ptr++;   // domain name
+            ptr[0] = (unsigned char)con->hostname_len; ptr++;                       // send the length of domain
+            strncpy(ptr, con->hostname, con->hostname_len); ptr += con->hostname_len; // domain
+        }
+
         ptr[0] = (unsigned char)(dest_port >> 8); ptr++;   // 2 bytes port number
         ptr[0] = (unsigned char)(dest_port & 0xFF); ptr++;
 
@@ -629,8 +640,10 @@ parse_client_request(struct Connection *con) {
     resolve_original_destination(con);
 
     if (con->listener->protocol == none_protocol) {
+        con->proxy.use_original_dest = 1;
         result = reverse_hostname(con, &hostname, 1);
     } else {
+        con->proxy.use_original_dest = 0;
         result = con->listener->protocol->parse_packet(payload, payload_len, &hostname);
     }
 

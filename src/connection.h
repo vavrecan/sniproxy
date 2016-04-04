@@ -74,6 +74,7 @@ struct Connection {
         } state;
         char *username;
         char *password;
+        int use_original_dest;
         int dest_port;
     } proxy;
 
